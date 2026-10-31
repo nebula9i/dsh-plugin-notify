@@ -15,6 +15,8 @@
     "docs",
     "cordis.patch.yml",
     "README.md",
+    "CHANGELOG.md",
+    "CONTRIBUTING.md",
     "LICENSE"
   ],
   "engines": {
