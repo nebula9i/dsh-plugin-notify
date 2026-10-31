@@ -1,0 +1,10 @@
+# Diagnostic log the plugin writes when `debug: true`.
+debug.log
+
+# Scratch files the plugin writes at runtime (normally under the OS temp dir,
+# but a dev running with a local TMP may drop them here).
+*.layout
+*.size
+
+node_modules/
+pnpm-lock.yaml

@@ -1,0 +1,56 @@
+{
+  "name": "dsh-plugin-notify",
+  "version": "0.1.0",
+  "description": "DeepSeek Harness plugin: a native Windows desktop notification whenever the agent needs an answer (ask_user_question, plan review, or a permission prompt). It notifies; you answer in the chat.",
+  "type": "module",
+  "main": "index.mjs",
+  "exports": {
+    ".": "./index.mjs",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.mjs",
+    "lib",
+    "docs",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20",
+    "dsh": ">=0.2.0-0 <0.3.0"
+  },
+  "os": [
+    "win32"
+  ],
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "notification",
+    "desktop-notification",
+    "windows",
+    "cordis"
+  ],
+  "license": "MIT",
+  "author": "nebula9i",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nebula9i/dsh-plugin-notify.git"
+  },
+  "bugs": {
+    "url": "https://github.com/nebula9i/dsh-plugin-notify/issues"
+  },
+  "homepage": "https://github.com/nebula9i/dsh-plugin-notify#readme",
+  "scripts": {
+    "test": "node test/smoke.mjs",
+    "previews": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File test/previews.ps1"
+  },
+  "dsh": {
+    "manifestVersion": 1,
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

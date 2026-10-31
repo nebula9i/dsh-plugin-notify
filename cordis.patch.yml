@@ -1,0 +1,50 @@
+# dsh-plugin-notify bundle patch: mount the notify plugin.
+#
+# Every key below is a Config field validated by resolveConfig() in index.mjs;
+# an invalid value fails the profile load loudly. See README.md "Configuration".
+- insert:
+    - id: notify
+      # A path, not the bare package name, on purpose. app-boot's
+      # anchorInsertedPluginNames() rewrites a relative name into a file URL
+      # anchored beside THIS file, so the row names its entry point directly and
+      # does not depend on how the loader resolves a bare specifier. Both forms
+      # load; this one is explicit.
+      name: ./index.mjs
+      config:
+        # Master switch: false unmounts both listeners.
+        enabled: true
+        # Append a diagnostic log beside the plugin (mount, dispatch, helper
+        # result). Off by default; turn it on when notifications misbehave, then
+        # read debug.log - it separates "never mounted" from "never dispatched"
+        # from "never drawn".
+        debug: false
+        # Notify when a question needs a human answer (ask_user_question, plan
+        # review, or any plugin asking through ctx.userQuestions).
+        questions: true
+        # Notify when a sensitive tool action is waiting for approval.
+        approvals: true
+        # A card never times out: it stays until you click it. When a card from
+        # ANOTHER chat arrives it pushes the older ones up and starts this
+        # countdown, after which the pushed card closes. If the newer cards go
+        # away first and a card becomes the newest again, its countdown stops.
+        countdownMs: 20000
+        # Hard ceiling on simultaneously visible cards. Past this the oldest is
+        # closed immediately, so a burst can never fill the screen.
+        maxStack: 5
+        # Play the system exclamation sound with each card.
+        sound: true
+        # Clicking a card brings the DeepSeek Harness window forward. The card
+        # never answers: the answer is always given in the chat.
+        focusOnClick: true
+        # Window (ms) for suppressing an IDENTICAL request re-dispatched in a
+        # loop. It must never gate distinct questions: two questions asked in one
+        # request are one card with two tabs. Keying this on the chat rather than
+        # on the request silently dropped the second question.
+        throttleMs: 5000
+        # PowerShell used to draw the card (must be Windows PowerShell 5.1 or
+        # pwsh; 5.1 is the default because it needs no extra setup).
+        powershell: powershell.exe
+        # Body text clamp, in characters.
+        maxBodyChars: 220
+        # Tab label used for a question that declares no header of its own.
+        title: DSH needs your answer
