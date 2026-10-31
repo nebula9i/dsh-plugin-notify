@@ -28,12 +28,35 @@ jobs:
           (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\NET Framework Setup\NDP\v4\Full' -ErrorAction SilentlyContinue).Release
 
       - name: Smoke test
-        run: node test/smoke.mjs
+        shell: pwsh
+        run: |
+          node test/smoke.mjs 2>&1 | Tee-Object -FilePath smoke.log
+          if ($LASTEXITCODE -ne 0) { exit 1 }
 
-      - name: Upload the diagnostic log on failure
+      # A job log is not readable through the REST API, so a CI failure would be
+      # invisible to anyone diagnosing it from outside the web UI. Re-emitting the
+      # failure as check-run annotations makes it machine-readable.
+      - name: Surface the failure as annotations
+        if: failure()
+        shell: pwsh
+        run: |
+          foreach ($file in @('smoke.log', 'debug.log')) {
+            if (-not (Test-Path $file)) { continue }
+            $n = 0
+            foreach ($line in Get-Content $file) {
+              $n++
+              if ($file -eq 'smoke.log' -and $line -notmatch 'FAIL') { continue }
+              $escaped = $line -replace '%', '%25' -replace "`r", ''
+              Write-Host "::error title=$file line $n::$escaped"
+            }
+          }
+
+      - name: Upload the diagnostic log
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: debug-log
-          path: debug.log
+          path: |
+            debug.log
+            smoke.log
           if-no-files-found: ignore
