@@ -25,11 +25,33 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# Append one diagnostic line, tolerating concurrent writers. Add-Content opens
+# with a share mode that makes two cards logging at the same instant lose one of
+# the lines, and a missing "start" line is indistinguishable from a helper that
+# never ran at all. Defined before first use, since PowerShell resolves functions
+# in execution order.
+function Write-HelperLog([string]$Message) {
+  if (-not $LogPath) { return }
+  $line = "$((Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffZ')) helper: $Message`r`n"
+  for ($attempt = 0; $attempt -lt 8; $attempt++) {
+    try {
+      $stream = [System.IO.File]::Open($LogPath, [System.IO.FileMode]::Append, [System.IO.FileAccess]::Write, [System.IO.FileShare]::ReadWrite)
+      $writer = New-Object System.IO.StreamWriter($stream, (New-Object System.Text.UTF8Encoding($false)))
+      $writer.Write($line)
+      $writer.Dispose()
+      $stream.Dispose()
+      return
+    } catch {
+      Start-Sleep -Milliseconds 25
+    }
+  }
+}
+
 try {
   $json = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($Payload))
   $spec = $json | ConvertFrom-Json
 } catch {
-  if ($LogPath) { Add-Content -LiteralPath $LogPath -Value "helper: payload decode failed: $($_.Exception.Message)" -ErrorAction SilentlyContinue }
+  Write-HelperLog "payload decode failed: $($_.Exception.Message)"
   exit 2
 }
 
@@ -67,10 +89,7 @@ foreach ($tab in @($spec.tabs)) {
   $model.Tabs.Add($tabModel)
 }
 
-if ($LogPath) {
-  $stamp = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
-  Add-Content -LiteralPath $LogPath -Value "$stamp helper: start pid=$PID card=$($model.CardId) tabs=$($model.Tabs.Count)" -ErrorAction SilentlyContinue
-}
+Write-HelperLog "start pid=$PID card=$($model.CardId) tabs=$($model.Tabs.Count)"
 
 if ($model.Sound) {
   try { [System.Media.SystemSounds]::Exclamation.Play() } catch { }
@@ -84,7 +103,7 @@ try {
   $form = New-Object DshNotify.CardForm $model
   [System.Windows.Forms.Application]::Run($form)
 } catch {
-  if ($LogPath) { Add-Content -LiteralPath $LogPath -Value "helper: card failed: $($_.Exception.Message)" -ErrorAction SilentlyContinue }
+  Write-HelperLog "card failed: $($_.Exception.Message)"
   exit 3
 }
 

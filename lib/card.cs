@@ -78,16 +78,35 @@ namespace DshNotify
 
     internal static class Diag
     {
+        /// Append one line, tolerating concurrent writers.
+        ///
+        /// File.AppendAllText opens with FileShare.Read, so two cards writing at
+        /// the same instant make one of them throw a sharing violation - and since
+        /// these writes are best-effort, the line was silently dropped. That cost
+        /// real debugging time: a missing "showing card" line is indistinguishable
+        /// from a card that never drew, and the smoke test asserted on exactly
+        /// those lines.
         public static void Write(string path, string message)
         {
             if (string.IsNullOrEmpty(path)) return;
-            try
+            string line = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
+                + " helper: " + message + "\r\n";
+            for (int attempt = 0; attempt < 8; attempt++)
             {
-                File.AppendAllText(path,
-                    DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ") + " helper: " + message + "\r\n",
-                    new UTF8Encoding(false));
+                try
+                {
+                    using (var stream = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.ReadWrite))
+                    using (var writer = new StreamWriter(stream, new UTF8Encoding(false)))
+                    {
+                        writer.Write(line);
+                    }
+                    return;
+                }
+                catch
+                {
+                    System.Threading.Thread.Sleep(25);
+                }
             }
-            catch { }
         }
     }
 

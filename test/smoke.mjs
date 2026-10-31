@@ -31,6 +31,31 @@ const immediately = (value) => async () => value
 const never = () => new Promise(() => {})
 const agent = (id) => ({ session: { id } })
 
+/**
+ * Wait for the helper to actually do something, rather than for a fixed delay.
+ *
+ * A card costs an Add-Type compile of ~33 KB of C#, which takes ~0.5 s on a warm
+ * machine and several seconds on a cold CI runner. Fixed sleeps killed the
+ * helpers mid-compile, which looks exactly like "the helper never ran" - and
+ * that is precisely how the first CI run failed.
+ *
+ * @param {string} needle - text to look for in the debug log.
+ * @param {number} [timeoutMs] - how long to wait before giving up.
+ * @returns {Promise<boolean>} whether it appeared.
+ */
+async function waitForLog(needle, timeoutMs = 45000) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    try {
+      if (readFileSync(DEBUG_LOG, 'utf8').includes(needle)) return true
+    } catch {
+      // not written yet
+    }
+    await sleep(250)
+  }
+  return false
+}
+
 /** Mount the plugin against a fresh fake context. */
 function mount(config) {
   const listeners = new Map()
@@ -104,11 +129,12 @@ console.log('truncate:', truncate('a '.repeat(200), 40))
   const outcome = await listeners.get('approval/request')({ ...approval, agent: agent('s1') }, immediately('allowed-once'))
   if (outcome !== 'allowed-once') fail(`approval dispatch returned ${JSON.stringify(outcome)} instead of the downstream outcome`)
   console.log('pass-through verified for questions and approvals')
-  // Give the helpers time to finish compiling card.cs and draw. Add-Type compiles
-  // ~33 KB of C# per helper, and several starting at once takes well over a
-  // second; disposing sooner kills them mid-compile and they log nothing, which
-  // looks exactly like "the helper never ran".
-  await sleep(2000)
+  // The downstream answer resolves immediately, so the plugin writes a close
+  // marker and the card retires. Wait for that to be observed rather than
+  // guessing at a delay: a card must not be killed mid-compile.
+  if (!await waitForLog('dismissed (answered in chat)')) {
+    fail('no card retired after the chat answered — the auto-close path never ran')
+  }
   listeners.get('dispose')()
 }
 
@@ -129,7 +155,11 @@ console.log('truncate:', truncate('a '.repeat(200), 40))
   // answered", which correctly retires the card. These cards must persist to be
   // observed stacking.
   ask({ ...batch, agent: agent('s1') }, never)
-  await sleep(1600)
+  // Wait for the card to finish DRAWING, not merely to start: "tabs=2" also
+  // appears on the helper's start line, which is emitted before the form is
+  // built. Disposing on that would kill the card mid-render.
+  if (!await waitForLog('slid in')) fail('the two-tab card never finished drawing')
+  await sleep(400)
   const oneChat = readFileSync(layoutFile(), 'utf8').trim().split('\n')
   if (oneChat.length !== 1) fail(`one request should produce one card, found ${oneChat.length}`)
   if (oneChat[0].split('|')[1] !== '0') fail(`the only card must not count down, got "${oneChat[0]}"`)
@@ -137,7 +167,8 @@ console.log('truncate:', truncate('a '.repeat(200), 40))
 
   // A different chat gets its own card, which pushes the first one up.
   ask({ questions: [{ id: 'c', question: 'Question from a different chat.' }], agent: agent('s2') }, never)
-  await sleep(1600)
+  if (!await waitForLog('pushed to slot 1')) fail('the first card was never pushed up by the second chat')
+  await sleep(400)
   const twoChats = readFileSync(layoutFile(), 'utf8').trim().split('\n')
   if (twoChats.length !== 2) {
     fail(`two chats should produce two cards, found ${twoChats.length}: ${JSON.stringify(twoChats)}`)
@@ -155,7 +186,7 @@ console.log('truncate:', truncate('a '.repeat(200), 40))
 
 // -------------------------------------------------------------- helper evidence
 
-await sleep(1500)
+await sleep(500)
 const log = readFileSync(DEBUG_LOG, 'utf8')
 console.log('--- debug.log (tail) ---')
 console.log(log.trimEnd().split('\n').slice(-12).join('\n'))
