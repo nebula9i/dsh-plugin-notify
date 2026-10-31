@@ -1,0 +1,39 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    # The card is a WinForms window compiled by Windows PowerShell 5.1 against
+    # .NET Framework, so this cannot run on Linux: `powershell.exe` and the
+    # .NET Framework C# compiler are Windows-only.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Report the toolchain the card depends on
+        shell: pwsh
+        run: |
+          Write-Host "Windows PowerShell:"
+          powershell.exe -NoProfile -Command '$PSVersionTable.PSVersion.ToString()'
+          Write-Host ".NET Framework release:"
+          (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\NET Framework Setup\NDP\v4\Full' -ErrorAction SilentlyContinue).Release
+
+      - name: Smoke test
+        run: node test/smoke.mjs
+
+      - name: Upload the diagnostic log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-log
+          path: debug.log
+          if-no-files-found: ignore

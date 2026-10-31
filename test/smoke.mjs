@@ -28,6 +28,7 @@ const RUNTIME_DIR = join(tmpdir(), 'dsh-plugin-notify')
 const fail = (message) => { console.error('FAIL', message); process.exitCode = 1 }
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms))
 const immediately = (value) => async () => value
+const never = () => new Promise(() => {})
 const agent = (id) => ({ session: { id } })
 
 /** Mount the plugin against a fresh fake context. */
@@ -124,7 +125,10 @@ console.log('truncate:', truncate('a '.repeat(200), 40))
   const { listeners } = mount({ countdownMs: 4000, debug: true })
   const ask = listeners.get('user-questions/request')
 
-  ask({ ...batch, agent: agent('s1') }, immediately('ANSWER-FROM-UI'))
+  // `never`, not `immediately`: a resolving downstream now means "the chat
+  // answered", which correctly retires the card. These cards must persist to be
+  // observed stacking.
+  ask({ ...batch, agent: agent('s1') }, never)
   await sleep(1600)
   const oneChat = readFileSync(layoutFile(), 'utf8').trim().split('\n')
   if (oneChat.length !== 1) fail(`one request should produce one card, found ${oneChat.length}`)
@@ -132,13 +136,16 @@ console.log('truncate:', truncate('a '.repeat(200), 40))
   console.log('one request -> one card:', JSON.stringify(oneChat))
 
   // A different chat gets its own card, which pushes the first one up.
-  ask({ questions: [{ id: 'c', question: 'Question from a different chat.' }], agent: agent('s2') }, immediately('ANSWER-FROM-UI'))
+  ask({ questions: [{ id: 'c', question: 'Question from a different chat.' }], agent: agent('s2') }, never)
   await sleep(1600)
   const twoChats = readFileSync(layoutFile(), 'utf8').trim().split('\n')
-  if (twoChats.length !== 2) fail(`two chats should produce two cards, found ${twoChats.length}`)
-  if (twoChats[0].split('|')[1] !== '0') fail(`the newest card must not count down, got "${twoChats[0]}"`)
-  if (twoChats[1].split('|')[1] === '0') fail(`the pushed card must start a countdown, got "${twoChats[1]}"`)
-  console.log('two chats -> stacked:', JSON.stringify(twoChats))
+  if (twoChats.length !== 2) {
+    fail(`two chats should produce two cards, found ${twoChats.length}: ${JSON.stringify(twoChats)}`)
+  } else {
+    if (twoChats[0].split('|')[1] !== '0') fail(`the newest card must not count down, got "${twoChats[0]}"`)
+    if (twoChats[1].split('|')[1] === '0') fail(`the pushed card must start a countdown, got "${twoChats[1]}"`)
+    console.log('two chats -> stacked:', JSON.stringify(twoChats))
+  }
 
   listeners.get('dispose')()
   await sleep(500)
@@ -158,6 +165,8 @@ for (const [needle, description] of [
   ['dispatch question', 'the question waterfall never reached the listener'],
   ['helper: start', 'the helper process started but ran no script'],
   ['helper: showing card', 'the helper ran but never drew a card'],
+  ['closing card', 'the plugin never noticed an answer arriving in the chat'],
+  ['dismissed (answered in chat)', 'a card did not retire when the chat answered'],
 ]) {
   if (!log.includes(needle)) fail(`missing "${needle}" — ${description}`)
 }

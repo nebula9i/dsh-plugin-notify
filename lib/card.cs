@@ -112,6 +112,9 @@ namespace DshNotify
         private readonly int _height;
         private readonly Color _accent;
         private readonly string _sizePath;
+        // Written by the plugin when the question is answered in the chat, so the
+        // card can retire itself instead of lingering after the answer.
+        private readonly string _closePath;
         private readonly Rectangle _area;
         private readonly List<TabSpec> _tabs;
         private readonly List<Button> _tabButtons = new List<Button>();
@@ -127,6 +130,7 @@ namespace DshNotify
         private bool _slideLogged;
         private bool _settled;
         private bool _dismissing;
+        private bool _closeHover;
         private bool _counting;
         private DateTime _countdownEnds = DateTime.MinValue;
         private int _countdownTotalMs;
@@ -171,6 +175,7 @@ namespace DshNotify
             _sizePath = string.IsNullOrEmpty(spec.LayoutPath) || string.IsNullOrEmpty(spec.CardId)
                 ? ""
                 : Path.Combine(Path.GetDirectoryName(spec.LayoutPath), spec.CardId + ".size");
+            _closePath = string.IsNullOrEmpty(_sizePath) ? "" : _sizePath.Replace(".size", ".close");
 
             int pad = (int)Math.Round(16 * scale);
             int contentX = (int)Math.Round(4 * scale) + (int)Math.Round(14 * scale);
@@ -189,7 +194,8 @@ namespace DshNotify
                     AutoSize = false,
                     UseMnemonic = false,
                     Cursor = Cursors.Hand,
-                    Bounds = new Rectangle(contentX, y, contentW, (int)Math.Round(21 * scale)),
+                    // Leaves room for the close button at the right edge.
+                    Bounds = new Rectangle(contentX, y, contentW - (int)Math.Round(26 * scale), (int)Math.Round(21 * scale)),
                 });
                 y += (int)Math.Round(21 * scale) + (int)Math.Round(7 * scale);
             }
@@ -235,7 +241,7 @@ namespace DshNotify
             _tick = new Timer { Interval = 15 };
             _tick.Tick += OnTick;
             _poll = new Timer { Interval = 250 };
-            _poll.Tick += (s, e) => PollLayout();
+            _poll.Tick += (s, e) => OnPoll();
             _autoClose = new Timer { Interval = Math.Max(200, spec.AutoCloseMs) };
             _autoClose.Tick += (s, e) => { _autoClose.Stop(); Dismiss("autoclose"); };
 
@@ -369,6 +375,28 @@ namespace DshNotify
             return y;
         }
 
+        /// The dismiss affordance, top-right. Without it the only way to get rid
+        /// of a card is to click it, which also switches to the chat.
+        private RectangleF CloseRect()
+        {
+            return new RectangleF(_width - 32 * _scale, 9 * _scale, 22 * _scale, 22 * _scale);
+        }
+
+        private void DrawClose(Graphics g)
+        {
+            RectangleF r = CloseRect();
+            if (_closeHover)
+            {
+                using (var brush = new SolidBrush(Color.FromArgb(48, 51, 57)))
+                using (GraphicsPath path = Rounded(r, 5f * _scale))
+                    g.FillPath(brush, path);
+            }
+            using (var font = new Font("Segoe UI", 9.5f, FontStyle.Regular, GraphicsUnit.Point))
+            using (var fmt = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center })
+            using (var brush = new SolidBrush(_closeHover ? Color.FromArgb(235, 236, 240) : Color.FromArgb(128, 133, 142)))
+                g.DrawString("\u2715", font, brush, r, fmt);
+        }
+
         private static Color Parse(string hex, Color fallback)
         {
             if (string.IsNullOrEmpty(hex)) return fallback;
@@ -437,6 +465,23 @@ namespace DshNotify
                 }
             }
             catch (Exception dumpEx) { Diag.Write(_spec.LogPath, "dump failed: " + dumpEx.Message); }
+        }
+
+        /// Poll the shared layout, and retire if the question was answered in the
+        /// chat. The plugin observes the answer because the waterfall resolves
+        /// when the chat's own answerer settles it, so the card can step aside
+        /// rather than linger next to a question that is already answered.
+        private void OnPoll()
+        {
+            if (!string.IsNullOrEmpty(_closePath))
+            {
+                try
+                {
+                    if (File.Exists(_closePath)) { Dismiss("answered in chat"); return; }
+                }
+                catch { }
+            }
+            PollLayout();
         }
 
         /// Read the shared layout, recompute our slot, and manage the countdown.
@@ -568,11 +613,30 @@ namespace DshNotify
                 using (var brush = new SolidBrush(Color.FromArgb(150, _accent)))
                     g.FillRectangle(brush, 0, _height - (float)Math.Round(3 * _scale), _width * fraction, (float)Math.Round(3 * _scale));
             }
+
+            DrawClose(g);
+        }
+
+        protected override void OnMouseMove(MouseEventArgs e)
+        {
+            base.OnMouseMove(e);
+            bool hover = CloseRect().Contains(e.Location);
+            if (hover != _closeHover) { _closeHover = hover; Invalidate(); }
         }
 
         protected override void OnMouseUp(MouseEventArgs e)
         {
             base.OnMouseUp(e);
+            if (_settled) return;
+            // The close button dismisses without switching to the chat; anywhere
+            // else on the card opens the chat.
+            if (CloseRect().Contains(e.Location))
+            {
+                _settled = true;
+                Diag.Write(_spec.LogPath, "closed via the X button");
+                Dismiss("closed");
+                return;
+            }
             OpenChat();
         }
 

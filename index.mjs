@@ -294,6 +294,18 @@ function readdirSafe(path) {
 }
 
 /**
+ * Card identity: one card per chat per kind of decision. A session's questions
+ * and its approvals therefore never share a card.
+ *
+ * @param {string} kind - 'question' or 'approval'.
+ * @param {object} request - the dispatched request.
+ * @returns {string} the group key.
+ */
+function groupKey(kind, request) {
+  return `${kind}:${request?.agent?.session?.id ?? 'agentless'}`
+}
+
+/**
  * Mount the plugin: register both waterfalls as notifying observers.
  *
  * @param {object} ctx - Cordis context.
@@ -319,7 +331,27 @@ export function apply(ctx, config = {}) {
       try { child.kill() } catch { }
     }
     stack.forget(group.entry.id)
+    for (const suffix of ['.close', '.size']) {
+      try { rmSync(join(RUNTIME_DIR, `${group.entry.id}${suffix}`), { force: true }) } catch { }
+    }
     groups.delete(group.key)
+  }
+
+  /**
+   * Ask a group's card to retire. The card polls for this marker and slides away
+   * itself, so a card whose question was just answered in the chat disappears
+   * instead of sitting next to an answer that has already been given.
+   */
+  const closeGroup = (kind, request) => {
+    const group = groups.get(groupKey(kind, request))
+    if (group === undefined) return
+    try {
+      mkdirSync(RUNTIME_DIR, { recursive: true })
+      writeFileSync(join(RUNTIME_DIR, `${group.entry.id}.close`), '', 'utf8')
+      debugLog(resolved, `closing card ${group.entry.id} (answered in the chat)`)
+    } catch (error) {
+      debugLog(resolved, `could not write the close marker: ${error.message}`)
+    }
   }
 
   /** Render one group's card from its current tabs, replacing an existing card. */
@@ -399,7 +431,7 @@ export function apply(ctx, config = {}) {
   /** Register one dispatch, creating or growing the chat's card. */
   const register = (kind, request, build) => {
     const sessionId = request?.agent?.session?.id
-    const key = `${kind}:${sessionId ?? 'agentless'}`
+    const key = groupKey(kind, request)
     let group = groups.get(key)
     if (group === undefined) {
       group = { key, units: [], entry: stack.reserve(), child: undefined }
@@ -418,6 +450,13 @@ export function apply(ctx, config = {}) {
     // Always delegate, and always return the downstream answer: this plugin never
     // answers anything.
     const downstream = next()
+    // Observing the answer is not the same as giving one. `next()` resolves when
+    // the chat's own answerer settles the request, so this fires exactly when the
+    // question stops being pending - and the returned value is untouched.
+    downstream.then(
+      () => closeGroup(kind, request),
+      () => closeGroup(kind, request),
+    )
     if (disabled) return downstream
     try {
       const now = Date.now()
