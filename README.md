@@ -37,6 +37,22 @@ The plugin is therefore a **pure observer**: it calls `next()` and returns
 whatever the rest of the waterfall produced, so the chat behaves exactly as it
 would without this plugin installed.
 
+### How a card goes away
+
+| You | What happens |
+|---|---|
+| **Click the card** | Brings the chat forward and dismisses the card. |
+| **Click the ✕** | Dismisses it without switching to the chat. |
+| **Answer in the chat** | The card retires on its own. |
+| **Nothing** | It stays. A card never times out. |
+
+The auto-close is worth spelling out, because it looks like answering but is not.
+The plugin calls `next()` and returns it untouched; `next()` resolves when the
+chat's own answerer settles the request, so a `.then` on that same promise fires
+exactly when the question stops being pending. The plugin then writes a
+`<cardId>.close` marker, and the card's poll picks it up and slides away. The
+value returned to the waterfall is never altered, which the smoke test asserts.
+
 ## Triggers
 
 | Trigger | Source waterfall | Card |
@@ -59,7 +75,7 @@ keeping its slot on screen.
 
 ## Cards persist, and they stack
 
-A card does **not** time out. It stays until you click it.
+A card does **not** time out. It stays until you click it or its ✕.
 
 When a card from another chat arrives it takes the bottom slot, pushes the
 existing cards up, and each pushed card starts a countdown — shown as a bar
