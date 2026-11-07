@@ -212,6 +212,10 @@ namespace DshNotify
                     BackColor = Color.Transparent,
                     AutoSize = false,
                     UseMnemonic = false,
+                    // A Label clips its text silently. Headings can carry the
+                    // chat's name (turn-end cards), so degrade with an ellipsis
+                    // rather than cutting a word in half.
+                    AutoEllipsis = true,
                     Cursor = Cursors.Hand,
                     // Leaves room for the close button at the right edge.
                     Bounds = new Rectangle(contentX, y, contentW - (int)Math.Round(26 * scale), (int)Math.Round(21 * scale)),

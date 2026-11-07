@@ -23,6 +23,20 @@
         questions: true
         # Notify when a sensitive tool action is waiting for approval.
         approvals: true
+        # Notify when a turn finishes, so you can look away while the agent works.
+        # This watches the `turn/end` session event; there is no separate service
+        # for "task finished".
+        turnEnd: true
+        # Which turn ends are worth a card. The full vocabulary is completed,
+        # aborted, blocked, error, max-tokens, interrupted and forked:
+        #   aborted / interrupted - you stopped it yourself, so stay quiet
+        #   forked                - a session fork, not a user-visible task
+        #   blocked               - the loop refused to continue; add it if you
+        #                           want to be told
+        turnEndReasons:
+          - completed
+          - error
+          - max-tokens
         # A card never times out: it stays until you click it. When a card from
         # ANOTHER chat arrives it pushes the older ones up and starts this
         # countdown, after which the pushed card closes. If the newer cards go

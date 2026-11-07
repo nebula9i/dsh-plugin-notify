@@ -6,6 +6,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Turn-end notifications.** The card now also appears when the task finishes,
+  watched from the `turn/end` session event rather than a service, since the
+  harness has none for "task finished". `completed`, `error` and `max-tokens` are
+  announced by default; `aborted`, `interrupted`, `forked` and `blocked` stay
+  quiet, and `turnEndReasons` changes the set. The body is the last thing the
+  agent said, taken from the same event stream so no dependency on
+  `@deepseek-ai/dsh-session` is needed; the heading names the chat's working
+  directory. A finished turn raises no card while a question card is open for the
+  same chat.
+
 ## [0.1.0] - 2026-10-31
 
 First release.

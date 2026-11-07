@@ -19,7 +19,7 @@ import { existsSync, readdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
-import { apply, resolveConfig, questionTabs, approvalTabs, truncate } from '../index.mjs'
+import { apply, resolveConfig, questionTabs, approvalTabs, turnEndCard, messageText, truncate } from '../index.mjs'
 
 const PLUGIN_DIR = dirname(dirname(fileURLToPath(import.meta.url)))
 const DEBUG_LOG = join(PLUGIN_DIR, 'debug.log')
@@ -116,6 +116,32 @@ for (const built of [questionTabs(options, config), approvalTabs(approval, confi
 }
 console.log('truncate:', truncate('a '.repeat(200), 40))
 
+// --------------------------------------------------------------- turn ends
+
+const finished = turnEndCard({
+  reason: { kind: 'completed' },
+  turn: 3,
+  lastText: 'Done. I added the notification plugin and pushed it.',
+  cwd: 'C:\\Users\\someone\\Projects\\DSH Plugins',
+}, config)
+console.log(`turn finished: ${finished.accent} "${finished.heading}" tab "${finished.tabs[0].label}" body "${finished.tabs[0].body}"`)
+
+if (finished.heading !== 'Task finished · DSH Plugins') fail(`the heading does not name the chat, got ${JSON.stringify(finished.heading)}`)
+if (finished.tabs[0].label !== 'DSH Plugins') fail('the tab label is not the working directory name')
+if (!finished.tabs[0].body.includes('Done. I added')) fail('the body is not the last thing the agent said')
+
+const failed = turnEndCard({ reason: { kind: 'error', error: { message: 'rate limited' } }, turn: 1, lastText: 'partial', cwd: 'C:\\x\\proj' }, config)
+console.log(`turn failed:   "${failed.heading}" body "${failed.tabs[0].body}"`)
+if (!failed.heading.startsWith('Task failed')) fail(`an errored turn is not headed "Task failed", got ${JSON.stringify(failed.heading)}`)
+if (failed.tabs[0].body !== 'rate limited') fail('an errored turn does not show the failure reason')
+
+if (turnEndCard({ reason: { kind: 'completed' }, turn: 1, cwd: '' }, config).tabs[0].body !== 'The turn ended.') {
+  fail('a turn with no text and no cwd lost its fallback body')
+}
+if (messageText({ content: [{ type: 'text', text: 'hello' }, { type: 'tool-call' }, { type: 'text', text: 'world' }] }) !== 'hello world') {
+  fail('messageText did not concatenate only the text blocks')
+}
+
 // ------------------------------------------------------------- never answers
 
 // The plugin must return exactly what the rest of the waterfall produced, both
@@ -184,6 +210,41 @@ console.log('truncate:', truncate('a '.repeat(200), 40))
   if (leftover.length > 0) fail(`dispose left layout file(s) behind: ${leftover.join(', ')}`)
 }
 
+// 7. A finished turn notifies; a turn you stopped does not; and a turn end never
+//    stacks a card on top of an open question card for the same chat.
+{
+  const { listeners } = mount({ countdownMs: 2000, debug: true })
+  const emit = listeners.get('session/event')
+  if (typeof emit !== 'function') fail('the plugin does not listen for session/event')
+
+  const ses = { id: 's-turn', header: { cwd: 'C:\\Users\\someone\\Projects\\DSH Plugins' } }
+  const cardCount = () => (readFileSync(DEBUG_LOG, 'utf8').match(/key=turn-end:/g) ?? []).length
+
+  // The agent speaks, then the turn completes.
+  emit(ses, { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: 'All done, the repo is pushed.' }] } } })
+  emit(ses, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
+  if (!await waitForLog('key=turn-end:s-turn')) fail('a completed turn produced no card')
+  else console.log('completed turn -> card raised')
+
+  // A turn the user aborted is their own doing, so it stays quiet.
+  const afterCompleted = cardCount()
+  emit(ses, { type: 'turn/end', data: { turn: 2, reason: { kind: 'aborted', reason: 'user' } } })
+  await sleep(500)
+  if (cardCount() !== afterCompleted) fail('an aborted turn produced a card')
+
+  // While a question is being asked, that card already has the user's attention.
+  listeners.get('user-questions/request')({ questions: [{ id: 'x', question: 'Which one?' }], agent: agent('s-turn') }, never)
+  if (!await waitForLog('question:s-turn')) fail('the question card was never raised')
+  const beforeSuppressed = cardCount()
+  emit(ses, { type: 'turn/end', data: { turn: 3, reason: { kind: 'completed' } } })
+  await sleep(600)
+  if (cardCount() !== beforeSuppressed) fail('a turn end stacked another card while a question card was open')
+  else console.log('turn end suppressed while a question card is open')
+
+  listeners.get('dispose')()
+  await sleep(400)
+}
+
 // -------------------------------------------------------------- helper evidence
 
 await sleep(500)
@@ -193,7 +254,7 @@ console.log(log.trimEnd().split('\n').slice(-12).join('\n'))
 
 for (const [needle, description] of [
   ['mounted', 'plugin never mounted'],
-  ['dispatch question', 'the question waterfall never reached the listener'],
+  ['key=question:', 'the question waterfall never reached the listener'],
   ['helper: start', 'the helper process started but ran no script'],
   ['helper: showing card', 'the helper ran but never drew a card'],
   ['closing card', 'the plugin never noticed an answer arriving in the chat'],
@@ -218,4 +279,4 @@ for (const match of slid) {
 }
 if (slid.length > 0) console.log(`slide-in verified on ${slid.length} card(s): window reached its target position`)
 
-console.log(process.exitCode === 1 ? 'smoke test FAILED' : 'smoke test passed (cards drawn, two tabs on one card, never answers)')
+console.log(process.exitCode === 1 ? 'smoke test FAILED' : 'smoke test passed (cards drawn, two tabs on one card, turn ends announced, never answers)')

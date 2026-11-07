@@ -81,6 +81,8 @@ const ACCENT = {
   question: '#4D6BFE',
   review: '#7C5CFF',
   approval: '#E5A00D',
+  finished: '#2FA65A',
+  failed: '#C4483F',
 }
 
 // Unique across every stack in this process; see createStack().
@@ -92,6 +94,11 @@ const DEFAULTS = {
   enabled: true,
   questions: true,
   approvals: true,
+  // Notify when a turn finishes, so you can look away while the agent works.
+  turnEnd: true,
+  // Which turn ends are worth a card. `aborted` and `interrupted` mean you
+  // stopped it yourself, and `forked` is a session fork, so those stay quiet.
+  turnEndReasons: ['completed', 'error', 'max-tokens'],
   countdownMs: 20000,
   maxStack: 5,
   sound: true,
@@ -116,11 +123,14 @@ const DEFAULTS = {
  */
 export function resolveConfig(config = {}) {
   const resolved = { ...DEFAULTS, ...(config ?? {}) }
-  for (const key of ['enabled', 'questions', 'approvals', 'sound', 'focusOnClick', 'debug']) {
+  for (const key of ['enabled', 'questions', 'approvals', 'sound', 'focusOnClick', 'debug', 'turnEnd']) {
     if (typeof resolved[key] !== 'boolean') throw new Error(`${PLUGIN_NAME}: ${key} must be a boolean`)
   }
   for (const key of ['countdownMs', 'maxStack', 'throttleMs', 'maxBodyChars']) {
     if (!Number.isFinite(resolved[key]) || resolved[key] < 0) throw new Error(`${PLUGIN_NAME}: ${key} must be a non-negative number`)
+  }
+  if (!Array.isArray(resolved.turnEndReasons) || resolved.turnEndReasons.some(reason => typeof reason !== 'string')) {
+    throw new Error(`${PLUGIN_NAME}: turnEndReasons must be an array of turn-end reason strings`)
   }
   if (typeof resolved.powershell !== 'string' || resolved.powershell.length === 0) {
     throw new Error(`${PLUGIN_NAME}: powershell must be a non-empty path or command name`)
@@ -161,6 +171,60 @@ export function truncate(value, limit) {
   const text = String(value ?? '').replace(/\s+/g, ' ').trim()
   if (text.length <= limit) return text
   return `${text.slice(0, Math.max(0, limit - 1)).trimEnd()}…`
+}
+
+/**
+ * Extract the plain text of one message.
+ *
+ * Content is an array of blocks, of which only `{ type: 'text', text }` carries
+ * prose; tool calls, reasoning and attachments are deliberately ignored, since
+ * the point is to show what the agent said, not what it did.
+ *
+ * @param {object} message - an `AssistantMessage`.
+ * @returns {string} the concatenated text, or an empty string.
+ */
+export function messageText(message) {
+  const blocks = Array.isArray(message?.content) ? message.content : []
+  const parts = []
+  for (const block of blocks) {
+    if (block?.type === 'text' && typeof block.text === 'string') parts.push(block.text)
+  }
+  return parts.join(' ').replace(/\s+/g, ' ').trim()
+}
+
+/** Heading and accent for each turn-end reason worth announcing. */
+const TURN_END_COPY = {
+  completed: { heading: 'Task finished', accent: ACCENT.finished },
+  error: { heading: 'Task failed', accent: ACCENT.failed },
+  'max-tokens': { heading: 'Task stopped: token limit', accent: ACCENT.failed },
+}
+
+/**
+ * Describe a finished turn as a card.
+ *
+ * The body is the last thing the agent said, which is almost always the summary
+ * of what it just did. The chat's working directory goes in the heading, because
+ * a single-tab card hides its tab strip and the label would otherwise be lost -
+ * and with several chats running, "which one finished?" is the first question.
+ *
+ * @param {object} input - `{ reason, turn, lastText, cwd }`.
+ * @param {typeof DEFAULTS} config - resolved config.
+ * @returns {{accent: string, heading: string, tabs: object[]}}
+ */
+export function turnEndCard(input, config) {
+  const kind = String(input?.reason?.kind ?? 'completed')
+  const copy = TURN_END_COPY[kind] ?? { heading: 'Turn ended', accent: ACCENT.finished }
+  const folder = truncate(String(input?.cwd ?? '').split(/[\\/]/).filter(Boolean).pop() ?? '', 24)
+  const error = input?.reason?.error
+  const errorText = error === undefined || error === null
+    ? ''
+    : String(error.message ?? error.code ?? error)
+  const body = truncate(errorText || input?.lastText || 'The turn ended.', config.maxBodyChars)
+  return {
+    accent: copy.accent,
+    heading: folder.length > 0 ? `${copy.heading} · ${folder}` : copy.heading,
+    tabs: [{ label: folder || 'Session', body }],
+  }
 }
 
 /**
@@ -428,22 +492,29 @@ export function apply(ctx, config = {}) {
     })
   }
 
-  /** Register one dispatch, creating or growing the chat's card. */
-  const register = (kind, request, build) => {
-    const sessionId = request?.agent?.session?.id
-    const key = groupKey(kind, request)
+  /**
+   * Open a card for `key`, growing the existing one if that chat already has a
+   * card. Shared by the request waterfalls and by the turn-end notifier, which is
+   * why the key is passed in rather than derived here.
+   */
+  const open = (key, built, hint) => {
     let group = groups.get(key)
     if (group === undefined) {
       group = { key, units: [], entry: stack.reserve(), child: undefined }
       groups.set(key, group)
     }
-    const built = build(request, resolved)
     group.accent = built.accent
     group.heading = built.heading
-    group.hint = 'Click to open the chat'
+    group.hint = hint
     group.units.push({ tabs: built.tabs })
-    debugLog(resolved, `dispatch ${kind} session=${sessionId ?? 'none'} tabs=${built.tabs.length} card=${group.entry.id}`)
+    debugLog(resolved, `card ${group.entry.id} key=${key} tabs=${built.tabs.length}`)
     render(group)
+    return group
+  }
+
+  /** Register one dispatch, creating or growing the chat's card. */
+  const register = (kind, request, build) => {
+    open(groupKey(kind, request), build(request, resolved), 'Click to open the chat')
   }
 
   const guard = (kind, build) => (request, next) => {
@@ -484,11 +555,66 @@ export function apply(ctx, config = {}) {
     ctx.on('approval/request', guard('approval', approvalTabs))
   }
 
+  // --- turn ends ------------------------------------------------------------
+  //
+  // "Task finished" has no service of its own: the harness records it as a
+  // `turn/end` session event, carrying a reason from TurnEndReasonMap
+  // (completed | aborted | blocked | error | max-tokens | interrupted | forked).
+  //
+  // The last assistant text is tracked from the same event stream rather than by
+  // reading the session log, so this needs no dependency on @deepseek-ai/dsh-session
+  // and no branded sequence numbers.
+  const lastSaid = new Map()
+  let turnCounter = 0
+
+  ctx.on('session/event', (session, event) => {
+    if (disabled || !resolved.turnEnd) return
+    try {
+      const sessionId = session?.id
+      if (typeof sessionId !== 'string') return
+
+      if (event?.type === 'assistant/message') {
+        const text = messageText(event.data?.message)
+        // Only remember in-flight text; a turn's final message is usually the
+        // summary of what it just did, which is exactly what the card shows.
+        if (text.length > 0) lastSaid.set(sessionId, text)
+        return
+      }
+      if (event?.type !== 'turn/end') return
+
+      const reason = event.data?.reason ?? { kind: 'completed' }
+      const kind = String(reason.kind ?? 'completed')
+      if (!resolved.turnEndReasons.includes(kind)) {
+        debugLog(resolved, `turn end ${kind} for ${sessionId}: not announced`)
+        return
+      }
+      // A question card is already asking for attention; do not stack a second
+      // card for the same chat on top of it.
+      if (groups.has(`question:${sessionId}`)) {
+        debugLog(resolved, `turn end ${kind} for ${sessionId}: a question card is open`)
+        return
+      }
+
+      const built = turnEndCard({
+        reason,
+        turn: event.data?.turn,
+        lastText: lastSaid.get(sessionId),
+        cwd: session?.header?.cwd,
+      }, resolved)
+      // Each finished turn is its own moment, so it gets its own card rather than
+      // becoming another tab on the chat's card.
+      turnCounter += 1
+      open(`turn-end:${sessionId}:${turnCounter}`, built, 'Click to open the chat')
+    } catch (error) {
+      logger.warn(`turn-end notification failed: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  })
+
   ctx.on('dispose', () => {
     disabled = true
     for (const group of [...groups.values()]) finish(group)
     stack.dispose()
   })
 
-  debugLog(resolved, `mounted questions=${resolved.questions} approvals=${resolved.approvals} helper=${HELPER}`)
+  debugLog(resolved, `mounted questions=${resolved.questions} approvals=${resolved.approvals} turnEnd=${resolved.turnEnd} helper=${HELPER}`)
 }

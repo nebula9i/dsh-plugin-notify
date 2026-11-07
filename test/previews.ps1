@@ -65,6 +65,9 @@ function Render-Card($name, $accent, $heading, $tabs) {
 }
 
 $dash = [char]0x2014
+# Built from a code point: this file must stay pure ASCII, because Windows
+# PowerShell 5.1 guesses ANSI for a BOM-less script and would mangle a literal.
+$dot = [char]0x00B7
 
 Render-Card 'question.png' '#4D6BFE' 'DSH needs your answer' @(
   [ordered]@{ label = 'Choose a database'; body = ('Which database should the new service use ' + $dash + ' Postgres or SQLite?') }
@@ -82,4 +85,14 @@ Render-Card 'review.png' '#7C5CFF' 'Plan ready for review' @(
 Render-Card 'tabs.png' '#4D6BFE' 'DSH needs your answer' @(
   [ordered]@{ label = 'Database'; body = 'Which database should the new service use?' },
   [ordered]@{ label = 'Region'; body = 'Which region should it deploy to?' }
+)
+
+# A finished turn: the body is the last thing the agent said, the tab labels the
+# working directory so concurrent chats stay tellable apart.
+Render-Card 'finished.png' '#2FA65A' ('Task finished ' + $dot + ' DSH Plugins') @(
+  [ordered]@{ label = 'DSH Plugins'; body = 'Done. I added the notification plugin and pushed it to GitHub.' }
+)
+
+Render-Card 'failed.png' '#C4483F' ('Task failed ' + $dot + ' DSH Plugins') @(
+  [ordered]@{ label = 'DSH Plugins'; body = 'rate limited' }
 )

@@ -1,7 +1,8 @@
 # dsh-plugin-notify
 
 A DeepSeek Harness plugin that shows a **native desktop card whenever the agent
-is waiting for an answer from you**. It tells you; you answer in the chat.
+needs you** — because it is waiting for an answer, or because the task it was
+given has finished. It tells you; you answer in the chat.
 
 | Question | Permission prompt |
 |---|---|
@@ -10,6 +11,10 @@ is waiting for an answer from you**. It tells you; you answer in the chat.
 | Two questions, one card | Plan review |
 |---|---|
 | ![Tabbed card](docs/tabs.png) | ![Plan review card](docs/review.png) |
+
+| Task finished | Task failed |
+|---|---|
+| ![Finished card](docs/finished.png) | ![Failed card](docs/failed.png) |
 
 ## It notifies; it does not answer
 
@@ -55,11 +60,40 @@ value returned to the waterfall is never altered, which the smoke test asserts.
 
 ## Triggers
 
-| Trigger | Source waterfall | Card |
+| Trigger | Source | Card |
 |---|---|---|
-| `ask_user_question` | `user-questions/request` | question text, blue accent |
+| `ask_user_question` | `user-questions/request` waterfall | question text, blue accent |
 | Plan review (`exit_plan_mode`) | same, `intent.kind: plan-review` | purple accent |
-| Permission prompt | `approval/request` | amber accent |
+| Permission prompt | `approval/request` waterfall | amber accent |
+| Turn finished | `turn/end` session event | green accent |
+| Turn failed / hit the token limit | same, by `reason.kind` | red accent |
+
+### Task-finished notifications
+
+There is no service for "the task is done" — the harness records it as a
+`turn/end` session event carrying a reason from `TurnEndReasonMap`:
+
+| `reason.kind` | Announced by default | Why |
+|---|---|---|
+| `completed` | yes | the normal "done" |
+| `error` | yes | a failure matters more than a success |
+| `max-tokens` | yes | it stopped early, which is worth knowing |
+| `aborted`, `interrupted` | no | you stopped it yourself |
+| `forked` | no | a session fork, not a user-visible task |
+| `blocked` | no | the loop refused to continue; opt in if you want it |
+
+Set `turnEndReasons` to change the set, or `turnEnd: false` to turn all of it off.
+
+The body is the last thing the agent said — almost always the summary of what it
+just did — read from the same event stream rather than from the session log, so
+the plugin needs no dependency on `@deepseek-ai/dsh-session`. The heading names
+the chat's working directory, because with several chats open "which one
+finished?" is the first question. Each finished turn is its own card rather than
+another tab on the chat's card, since it is a moment in time.
+
+A finished turn does **not** raise a card while a question card is open for the
+same chat — that card already has your attention, and a turn does not end while
+`ask_user_question` is still waiting.
 
 ## One card per chat, one tab per question
 
@@ -174,9 +208,11 @@ removes any question about the resolution base.
 
 | Key | Default | Meaning |
 |---|---|---|
-| `enabled` | `true` | Master switch; `false` unmounts both listeners. |
+| `enabled` | `true` | Master switch; `false` unmounts every listener. |
 | `questions` | `true` | React to `user-questions/request`. |
 | `approvals` | `true` | React to `approval/request`. |
+| `turnEnd` | `true` | Notify when a turn finishes (the `turn/end` session event). |
+| `turnEndReasons` | `["completed","error","max-tokens"]` | Which `turn/end` reasons raise a card. |
 | `countdownMs` | `20000` | How long a card waits after being pushed up by a card from another chat. The newest card never counts down. |
 | `maxStack` | `5` | Ceiling on visible cards; past this the oldest closes immediately. |
 | `sound` | `true` | Play the system exclamation sound. |
@@ -190,9 +226,14 @@ removes any question about the resolution base.
 
 ## How it works
 
-Both seams are Cordis **waterfalls**. Waterfalls are dispatched with an agent
-scope, and `dsh-scope` admits untagged listeners to every descendant scope, so a
-single registration observes every agent, subagents included.
+Both question/approval seams are Cordis **waterfalls**. Waterfalls are dispatched
+with an agent scope, and `dsh-scope` admits untagged listeners to every
+descendant scope, so a single registration observes every agent, subagents
+included.
+
+Turn ends are not a waterfall: they are ordinary `session/event` updates, which
+the same rule lets this plugin observe for every session without knowing which
+agents exist.
 
 ### Why a PowerShell-drawn card instead of a Windows toast
 
@@ -286,7 +327,10 @@ files written by the host are elsewhere.
   C# (~0.5 s, longer when several cards start at once). Cards are rare, so this
   is deliberate: a short-lived helper cannot leak or hang around after a crash.
 - **No focus detection.** A card is shown even when the Harness window is already
-  focused; the host has no reliable "is the user looking at me" signal.
+  focused; the host has no reliable "is the user looking at me" signal. This
+  applies to turn-end cards too, so every finished turn notifies even while you
+  are reading the chat. Set `turnEnd: false`, or trim `turnEndReasons`, if that
+  is too chatty.
 - **A card stays until you click it.** By design. `maxStack` bounds how many can
   pile up, and pushed cards count down on their own.
 
